@@ -1,0 +1,23 @@
+{
+  "name": "greyhat",
+  "private": true,
+  "version": "0.1.0",
+  "description": "GreyHat - a simulated cybersecurity practice terminal game",
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "scripts": {
+    "dev": "npm run dev -w @greyhat/web",
+    "build": "npm run build -w @greyhat/web",
+    "test": "npm run test --workspaces --if-present",
+    "typecheck": "npm run typecheck --workspaces --if-present"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.3",
+    "vitest": "^2.1.8"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
