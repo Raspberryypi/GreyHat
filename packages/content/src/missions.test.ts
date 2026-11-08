@@ -3,6 +3,7 @@ import { Game } from '@greyhat/core';
 import { missions } from './index';
 import { ATTACKER_IP, COMPROMISED_USER } from './missions/m002-brute-force';
 import { INCIDENT_USER, INCIDENT_METHOD } from './missions/m005-after-the-fact';
+import { ATTACKER_IP as WEB_ATTACKER_IP, TECHNIQUE as WEB_TECHNIQUE } from './missions/m007-web-logs-dont-lie';
 
 const text = (out: { chunks: { text: string }[] }): string => out.chunks.map((c) => c.text).join('');
 
@@ -130,5 +131,122 @@ describe('M005 after the fact', () => {
     const fs = new Game(m005, 5).world.host('finance01').fs;
     expect(() => fs.readFile('/var/log/auth.log', { user: 'nobody', groups: ['nobody'] })).toThrow();
     expect(fs.readFile('/var/log/auth.log', { user: 'analyst', groups: ['analyst', 'adm'] })).toContain('sudo:');
+  });
+});
+
+describe('M006 lockdown', () => {
+  const m006 = missions.find((m) => m.id === 'M006')!;
+  const ATTACKER_IP6 = '198.51.100.90';
+
+  it('is deterministic for a given seed and varies between seeds', () => {
+    const read = (seed: number): string =>
+      new Game(m006, seed).world.host('edge01').fs.readFile('/var/log/auth.log', { user: 'root', groups: ['root'] });
+    expect(read(42)).toBe(read(42));
+    expect(read(42)).not.toBe(read(43));
+  });
+
+  it('the attacker really is the top source of failures, ahead of the decoy', async () => {
+    for (const seed of [1, 2, 3, 99, 2024]) {
+      const game = new Game(m006, seed);
+      const out = text(
+        await game.run(
+          "grep 'Failed password' /var/log/auth.log | grep -oE '[0-9]{1,3}(\\.[0-9]{1,3}){3}' | sort | uniq -c | sort -rn | head -2",
+        ),
+      );
+      const lines = out.trim().split('\n');
+      expect(lines[0]).toContain(ATTACKER_IP6);
+      expect(lines[1]).not.toContain(ATTACKER_IP6);
+    }
+  });
+
+  it('naming the attacker is not enough by itself -- the port stays reachable until ufw runs', async () => {
+    const game = new Game(m006, 5);
+    expect(game.world.probePort('threat-host', 'edge01', 22)).toBe('open');
+    await game.run(`submit ${ATTACKER_IP6}`);
+    expect(game.runtime.isDone('attacker')).toBe(true);
+    expect(game.runtime.isDone('contain')).toBe(false);
+    expect(game.world.probePort('threat-host', 'edge01', 22)).toBe('open');
+  });
+
+  it('ufw deny actually closes the port for the attacker without affecting legitimate hosts', async () => {
+    const game = new Game(m006, 5);
+    await game.run(`ufw deny from ${ATTACKER_IP6} to any port 22`);
+    expect(game.world.probePort('threat-host', 'edge01', 22)).toBe('filtered');
+    expect(game.runtime.isDone('contain')).toBe(true);
+    // A host that was never named in the rule is unaffected.
+    expect(game.world.probePort('edge01', 'edge01', 22)).toBe('open');
+  });
+
+  it('runs end to end via its own reference solution and completes all three objectives', async () => {
+    const game = new Game(m006, 12345);
+    for (const line of m006.solution) await game.run(line);
+    expect(game.runtime.isDone('read-log')).toBe(true);
+    expect(game.runtime.isDone('attacker')).toBe(true);
+    expect(game.runtime.isDone('contain')).toBe(true);
+  });
+});
+
+describe('M007 web logs', () => {
+  const m007 = missions.find((m) => m.id === 'M007')!;
+  const root = { user: 'root', groups: ['root'] };
+
+  it('is deterministic for a given seed and varies between seeds', () => {
+    const read = (seed: number): string =>
+      new Game(m007, seed).world.host('www01').fs.readFile('/var/log/nginx/access.log', root);
+    expect(read(42)).toBe(read(42));
+    expect(read(42)).not.toBe(read(43));
+  });
+
+  it('every attack line contains SELECT regardless of which SQLi payload was randomly picked', () => {
+    // Regression test for a real bug caught before shipping: the first draft
+    // only put "SELECT" in one of three randomly-chosen payload variants, so
+    // `grep SELECT` (what the hints and solution both tell the player to run)
+    // could come back empty on an unlucky seed. All variants now guarantee it.
+    for (const seed of [1, 2, 3, 17, 99, 2024, 777]) {
+      const log = new Game(m007, seed).world.host('www01').fs.readFile('/var/log/nginx/access.log', root);
+      const attackLines = log.split('\n').filter((l) => l.includes(WEB_ATTACKER_IP));
+      expect(attackLines.length).toBe(6);
+      for (const l of attackLines) expect(l).toContain('SELECT');
+    }
+  });
+
+  it('legitimate traffic never contains SELECT or the attacker IP (no false positives for grep)', () => {
+    const log = new Game(m007, 5).world.host('www01').fs.readFile('/var/log/nginx/access.log', root);
+    const legitLines = log.split('\n').filter((l) => l && !l.includes(WEB_ATTACKER_IP));
+    for (const l of legitLines) expect(l).not.toContain('SELECT');
+    expect(legitLines.length).toBe(60);
+  });
+
+  it('attack requests return 200 (the alarming signal), not a blocked status', () => {
+    const log = new Game(m007, 5).world.host('www01').fs.readFile('/var/log/nginx/access.log', root);
+    const attackLines = log.split('\n').filter((l) => l.includes(WEB_ATTACKER_IP));
+    for (const l of attackLines) expect(l).toMatch(/" 200 /);
+  });
+
+  it('naming the attacker and technique is not containment -- port 80 stays open until ufw runs', async () => {
+    const game = new Game(m007, 5);
+    expect(game.world.probePort('web-threat-host', 'www01', 80)).toBe('open');
+    await game.run(`submit ${WEB_ATTACKER_IP}`);
+    await game.run(`submit ${WEB_TECHNIQUE}`);
+    expect(game.runtime.isDone('attacker')).toBe(true);
+    expect(game.runtime.isDone('technique')).toBe(true);
+    expect(game.runtime.isDone('contain')).toBe(false);
+    expect(game.world.probePort('web-threat-host', 'www01', 80)).toBe('open');
+  });
+
+  it('ufw deny closes port 80 for the attacker without affecting the site itself', async () => {
+    const game = new Game(m007, 5);
+    await game.run(`ufw deny from ${WEB_ATTACKER_IP} to any port 80`);
+    expect(game.world.probePort('web-threat-host', 'www01', 80)).toBe('filtered');
+    expect(game.runtime.isDone('contain')).toBe(true);
+    expect(game.world.probePort('www01', 'www01', 80)).toBe('open');
+  });
+
+  it('the log is readable via the adm group but not by an unrelated user', () => {
+    const fs = new Game(m007, 5).world.host('www01').fs;
+    expect(() => fs.readFile('/var/log/nginx/access.log', { user: 'nobody', groups: ['nobody'] })).toThrow();
+    expect(fs.readFile('/var/log/nginx/access.log', { user: 'analyst', groups: ['analyst', 'adm'] })).toContain(
+      'HTTP/1.1',
+    );
   });
 });

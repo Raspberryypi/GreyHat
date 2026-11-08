@@ -107,3 +107,70 @@ describe('network commands', () => {
     expect(sshOut).toContain('timed out');
   });
 });
+
+describe('ufw', () => {
+  it('status reports no rules on a clean host', async () => {
+    const game = new Game(makeMission(), 1);
+    const out = text(await game.run('ufw status'));
+    expect(out).toContain('No rules defined');
+  });
+
+  it('deny from <ip> to any port <port> actually blocks that source and only that source', async () => {
+    // Run everything FROM 'target' so ufw edits target's own firewall, and so
+    // a second, uninvolved host ('attacker') can be used as the control case
+    // proving the rule is scoped to the IP, not blanket.
+    const game = new Game(makeMission({ start: { hostId: 'target', user: 'root' } }), 1);
+    expect(game.world.probePort('attacker', 'target', 22)).toBe('open');
+
+    const out = text(await game.run('ufw deny from 10.0.0.5 to any port 22'));
+    expect(out).toContain('Rule added');
+
+    // Blocked for the source we named...
+    expect(game.world.probePort('attacker', 'target', 22)).toBe('filtered');
+    // ...but NOT for the host itself: the rule is scoped to fromHostId
+    // 'attacker', and that scoping check (`r.fromHostId !== fromId`) simply
+    // doesn't match when fromId is 'target' -- probePort always evaluates
+    // the firewall regardless of who's asking, there's no separate loopback
+    // shortcut, so this is really testing that fromHostId-scoping works at
+    // all, not a special self-traffic case.
+    expect(game.world.probePort('target', 'target', 22)).toBe('open');
+
+    const status = text(await game.run('ufw status'));
+    expect(status).toContain('22/tcp');
+    expect(status).toContain('DENY');
+    expect(status).toContain('10.0.0.5');
+  });
+
+  it('allow/deny <port> (no "from") applies globally, with later rules winning', async () => {
+    const game = new Game(makeMission({ start: { hostId: 'target', user: 'root' } }), 1);
+    await game.run('ufw deny 22');
+    expect(game.world.probePort('attacker', 'target', 22)).toBe('filtered');
+    await game.run('ufw allow 22');
+    expect(game.world.probePort('attacker', 'target', 22)).toBe('open');
+  });
+
+  it('rejects an unresolvable address and an invalid port', async () => {
+    const game = new Game(makeMission({ start: { hostId: 'target', user: 'root' } }), 1);
+    const badIp = text(await game.run('ufw deny from 9.9.9.9 to any port 22'));
+    expect(badIp).toContain('could not resolve');
+    const badPort = text(await game.run('ufw allow notaport'));
+    expect(badPort).toContain('invalid port');
+  });
+
+  it('emits a firewall.rule event, which completes a firewallBlocks objective', async () => {
+    const m = makeMission({
+      start: { hostId: 'target', user: 'root' },
+      objectives: [
+        {
+          id: 'contain',
+          text: 'block the attacker on port 22',
+          check: { kind: 'firewallBlocks', hostId: 'target', port: 22, fromHostId: 'attacker' },
+        },
+      ],
+    });
+    const game = new Game(m, 1);
+    expect(game.runtime.isDone('contain')).toBe(false);
+    await game.run('ufw deny from 10.0.0.5 to any port 22');
+    expect(game.runtime.isDone('contain')).toBe(true);
+  });
+});

@@ -1,4 +1,4 @@
-import type { World } from '../world/world';
+import type { FirewallRule, World } from '../world/world';
 import type { CommandFn } from '../shell/types';
 import { appendSshAuthLine, appendSuAuthLine } from '../net/authlog';
 import { fail, ok, parseArgs } from './util';
@@ -198,6 +198,73 @@ export const netstat: CommandFn = (_args, ctx) => {
       rows.length ? '\n' : ''
     }`,
   );
+};
+
+/**
+ * ufw-lite: shows and edits the current host's firewall rules at runtime.
+ * Rules pushed here mutate the SAME Host.firewall array World.probePort
+ * reads, so a rule added here immediately changes what ping/nmap/ssh see
+ * on subsequent calls -- this is what makes containment a real, checkable
+ * action rather than a one-line flavor command.
+ *
+ *   ufw status                               list current rules
+ *   ufw deny from <ip> to any port <port>    block one source on one port
+ *   ufw allow <port>[/proto]                 open a port for everyone
+ *   ufw deny <port>[/proto]                  close a port for everyone
+ */
+export const ufw: CommandFn = (args, ctx) => {
+  if (args.length === 0 || args[0] === 'status') {
+    if (ctx.host.firewall.length === 0) {
+      return ok('Status: active\n\nNo rules defined.\n');
+    }
+    const rows = ctx.host.firewall.map((r) => {
+      const to = `${r.port}/${r.proto ?? 'tcp'}`.padEnd(27);
+      const action = (r.action === 'allow' ? 'ALLOW' : 'DENY').padEnd(12);
+      const from = r.fromHostId ? (ctx.world.hosts.get(r.fromHostId)?.ip ?? r.fromHostId) : 'Anywhere';
+      return `${to}${action}${from}`;
+    });
+    return ok(
+      `Status: active\n\nTo                         Action      From\n` +
+        `--                         ------      ----\n${rows.join('\n')}\n`,
+    );
+  }
+
+  const action = args[0];
+  if (action !== 'deny' && action !== 'allow') {
+    return fail(`ufw: unknown command: '${action}' (try: status, allow, deny)`);
+  }
+
+  let rule: FirewallRule;
+  if (args[1] === 'from') {
+    // ufw deny from <ip> to any port <port>
+    const ip = args[2];
+    const portIdx = args.indexOf('port');
+    const portArg = portIdx !== -1 ? args[portIdx + 1] : undefined;
+    if (!ip || !portArg) {
+      return fail(`ufw: usage: ufw ${action} from <ip> to any port <port>`);
+    }
+    const port = parseInt(portArg, 10);
+    if (Number.isNaN(port)) return fail(`ufw: invalid port: '${portArg}'`);
+    const srcHost = ctx.world.findHost(ip);
+    if (!srcHost) return fail(`ufw: could not resolve address: '${ip}'`);
+    rule = { port, proto: 'tcp', action, fromHostId: srcHost.id };
+  } else {
+    // ufw deny <port>[/proto]   /   ufw allow <port>[/proto]
+    const spec = args[1];
+    if (!spec) return fail(`ufw: usage: ufw ${action} <port>[/proto]`);
+    const [portStr, protoStr] = spec.split('/');
+    const port = parseInt(portStr, 10);
+    if (Number.isNaN(port)) return fail(`ufw: invalid port: '${spec}'`);
+    if (protoStr && protoStr !== 'tcp' && protoStr !== 'udp') {
+      return fail(`ufw: invalid protocol: '${protoStr}'`);
+    }
+    rule = { port, proto: (protoStr as 'tcp' | 'udp' | undefined) ?? 'tcp', action };
+  }
+
+  ctx.host.firewall.push(rule);
+  ctx.emit({ type: 'firewall.rule', hostId: ctx.host.id, rule, op: 'add' });
+  const scope = rule.fromHostId ? ` from ${args[2]}` : '';
+  return ok(`Rule added: ${rule.action} ${rule.port}/${rule.proto}${scope}\n`);
 };
 
 /** Shared by Shell.exec: called once the player types a line while `pendingAuth` is set. */

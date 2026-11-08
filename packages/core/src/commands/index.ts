@@ -1,7 +1,7 @@
 import type { CommandRegistry } from '../shell/types';
 import { cat, cd, chmod, chown, cp, find, ls, mkdir, mv, pwd, rm, touch } from './fs';
 import { awk, cut, echo, grep, head, sort, tail, uniq, wc } from './text';
-import { nmap, ping, ss, netstat, ssh, su } from './net';
+import { nmap, ping, ss, netstat, ssh, su, ufw } from './net';
 import { crontab, sudo } from './priv';
 import {
   clear,
@@ -62,6 +62,7 @@ export const coreCommands: CommandRegistry = {
   sudo,
   crontab,
   ps,
+  ufw,
 };
 
 export const coreHelp: Record<string, string> = {
@@ -107,4 +108,5 @@ export const coreHelp: Record<string, string> = {
   sudo: 'run a command as another user, per sudoers: sudo [-l] <command> [args]',
   crontab: 'show your own scheduled jobs: crontab -l',
   ps: 'list processes (-a/-e/-u/-x for a full table)',
+  ufw: 'manage this host\'s firewall: ufw status | ufw deny from <ip> to any port <p> | ufw allow <p>',
 };
