@@ -2,6 +2,15 @@ import type { Identity, VirtualFS } from '../fs/vfs';
 import type { GameEvent } from '../events';
 import type { Host, World } from '../world/world';
 
+/** A saved session state, pushed/popped around an `ssh` login. */
+export interface SessionFrame {
+  hostId: string;
+  user: string;
+  groups: string[];
+  cwd: string;
+  env: Record<string, string>;
+}
+
 export interface Session {
   hostId: string;
   user: string;
@@ -9,6 +18,15 @@ export interface Session {
   cwd: string;
   env: Record<string, string>;
   lastExit: number;
+  /** Stack of prior sessions; `ssh` pushes, `exit` pops back to the caller. */
+  stack: SessionFrame[];
+  /** Set while the shell is waiting for a password on the next line of input. */
+  pendingAuth?: {
+    targetHostId: string;
+    targetUser: string;
+    attemptsLeft: number;
+    fromFrame: SessionFrame;
+  };
 }
 
 /** One piece of terminal output. `sys` is game/system messaging (objectives, hints). */

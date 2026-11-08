@@ -1,10 +1,12 @@
 import type { CommandRegistry } from '../shell/types';
 import { cat, cd, find, ls, mkdir, pwd, rm, touch } from './fs';
 import { awk, cut, echo, grep, head, sort, tail, uniq, wc } from './text';
+import { nmap, ping, ss, netstat, ssh } from './net';
 import {
   clear,
   date,
   env,
+  exitCmd,
   exportCmd,
   falseCmd,
   help,
@@ -44,6 +46,12 @@ export const coreCommands: CommandRegistry = {
   help,
   true: trueCmd,
   false: falseCmd,
+  ping,
+  nmap,
+  ssh,
+  ss,
+  netstat,
+  exit: exitCmd,
 };
 
 export const coreHelp: Record<string, string> = {
@@ -75,4 +83,10 @@ export const coreHelp: Record<string, string> = {
   help: 'show this list',
   true: 'do nothing, successfully',
   false: 'do nothing, unsuccessfully',
+  ping: 'check if a host is reachable (-c count)',
+  nmap: 'scan a host for open ports (-p ports, -sV versions, -sn ping-only)',
+  ssh: 'log in to a remote host: ssh [user@]host (-l user, -p port)',
+  ss: 'show listening sockets on this host',
+  netstat: 'show listening sockets on this host (legacy ss alias)',
+  exit: 'log out of the current ssh session',
 };

@@ -21,6 +21,13 @@ export function matchesCheck(check: ObjectiveCheck, e: GameEvent): boolean {
       return e.type === 'cwd' && e.path === check.path;
     case 'answer':
       return e.type === 'answer.submitted' && norm(e.value) === norm(check.value);
+    case 'authSuccess':
+      return (
+        e.type === 'auth.attempt' &&
+        e.success &&
+        e.targetUser === check.targetUser &&
+        (!check.targetHostId || e.targetHostId === check.targetHostId)
+      );
   }
 }
 

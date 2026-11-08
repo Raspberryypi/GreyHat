@@ -8,6 +8,26 @@ export interface UserSpec {
   /** Supplementary groups (the primary group always equals the user name). */
   groups?: string[];
   shell?: string;
+  /** Plaintext password for simulated auth (ssh, su). Omit for no-password/unusable accounts. */
+  password?: string;
+}
+
+export interface ServiceSpec {
+  port: number;
+  proto?: 'tcp' | 'udp';
+  /** Short service name, e.g. "ssh", "http", "ftp". */
+  name: string;
+  version?: string;
+  /** Banner text a client would see from nc/curl against this port. */
+  banner?: string;
+}
+
+export interface FirewallRule {
+  port: number;
+  proto?: 'tcp' | 'udp';
+  action: 'allow' | 'deny';
+  /** Restrict this rule to traffic from one host. Omit to match all sources. */
+  fromHostId?: string;
 }
 
 export interface HostSpec {
@@ -17,6 +37,13 @@ export interface HostSpec {
   users: UserSpec[];
   /** Static filesystem, or a generator so logs/data can be seeded from events. */
   fs: FsSpec | ((rng: Rng) => FsSpec);
+  services?: ServiceSpec[];
+  firewall?: FirewallRule[];
+  /**
+   * Host ids this host can reach on the network. Omit for "reaches every
+   * host in the world" (default full mesh) -- set it to model subnets.
+   */
+  reachable?: string[];
 }
 
 export interface WorldSpec {
@@ -31,10 +58,17 @@ export interface Host {
   ip: string;
   users: UserSpec[];
   fs: VirtualFS;
+  services: ServiceSpec[];
+  firewall: FirewallRule[];
+  /** null = full mesh (reaches every host). */
+  reachable: Set<string> | null;
 }
+
+export type PortState = 'open' | 'closed' | 'filtered';
 
 export class World {
   readonly hosts = new Map<string, Host>();
+  private readonly ipIndex = new Map<string, string>();
 
   constructor(public now: number) {}
 
@@ -42,6 +76,46 @@ export class World {
     const h = this.hosts.get(id);
     if (!h) throw new Error(`Unknown host: ${id}`);
     return h;
+  }
+
+  /** Register (or re-register) a host's IP in the lookup index. */
+  indexIp(ip: string, hostId: string): void {
+    this.ipIndex.set(ip, hostId);
+  }
+
+  /** Find a host by exact IP match. */
+  hostByIp(ip: string): Host | undefined {
+    const id = this.ipIndex.get(ip);
+    return id ? this.hosts.get(id) : undefined;
+  }
+
+  /** Find a host by IP first, then by hostname. */
+  findHost(nameOrIp: string): Host | undefined {
+    return this.hostByIp(nameOrIp) ?? [...this.hosts.values()].find((h) => h.hostname === nameOrIp);
+  }
+
+  /** Can traffic from `fromId` reach `toId` at the network layer at all? */
+  canReach(fromId: string, toId: string): boolean {
+    if (fromId === toId) return true;
+    const from = this.host(fromId);
+    if (from.reachable === null) return true;
+    return from.reachable.has(toId);
+  }
+
+  /** Is a given port on `toId` open/closed/filtered, as seen from `fromId`? */
+  probePort(fromId: string, toId: string, port: number, proto: 'tcp' | 'udp' = 'tcp'): PortState {
+    if (!this.canReach(fromId, toId)) return 'filtered';
+    const target = this.host(toId);
+    let allowed = true;
+    for (const r of target.firewall) {
+      if (r.port !== port) continue;
+      if ((r.proto ?? 'tcp') !== proto) continue;
+      if (r.fromHostId && r.fromHostId !== fromId) continue;
+      allowed = r.action === 'allow';
+    }
+    if (!allowed) return 'filtered';
+    const svc = target.services.find((s) => s.port === port && (s.proto ?? 'tcp') === proto);
+    return svc ? 'open' : 'closed';
   }
 
   advance(ms: number): void {
@@ -68,7 +142,11 @@ export function buildWorld(spec: WorldSpec, rng: Rng): World {
       ip: h.ip,
       users: h.users,
       fs: VirtualFS.fromSpec(merged, spec.startTime),
+      services: h.services ?? [],
+      firewall: h.firewall ?? [],
+      reachable: h.reachable ? new Set(h.reachable) : null,
     });
+    world.indexIp(h.ip, h.id);
   }
   return world;
 }

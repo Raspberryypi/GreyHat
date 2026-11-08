@@ -1,4 +1,5 @@
 import type { CommandFn } from '../shell/types';
+import { restoreSession } from '../shell/session';
 import { ok, parseArgs } from './util';
 
 export const whoami: CommandFn = (_a, ctx) => ok(`${ctx.session.user}\n`);
@@ -62,6 +63,13 @@ export const exportCmd: CommandFn = (args, ctx) => {
     if (eq > 0) ctx.session.env[a.slice(0, eq)] = a.slice(eq + 1);
   }
   return ok();
+};
+
+export const exitCmd: CommandFn = (_a, ctx) => {
+  const frame = ctx.session.stack.pop();
+  if (!frame) return ok('logout\n');
+  restoreSession(ctx.session, frame);
+  return ok('logout\n');
 };
 
 export const help: CommandFn = (_a, ctx) => {

@@ -8,7 +8,9 @@ export type ObjectiveCheck =
   /** Player cd'd into this directory. */
   | { kind: 'cwdIs'; path: string }
   /** Player submitted this answer with `submit <answer>`. */
-  | { kind: 'answer'; value: string };
+  | { kind: 'answer'; value: string }
+  /** Player successfully authenticated (e.g. via ssh) as this user on a target host. */
+  | { kind: 'authSuccess'; targetUser: string; targetHostId?: string };
 
 export interface ObjectiveDef {
   id: string;

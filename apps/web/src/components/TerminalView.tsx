@@ -14,7 +14,7 @@ const STREAM_COLOR: Record<Chunk['stream'], string> = {
 
 const toCrlf = (s: string): string => s.replace(/\r?\n/g, '\r\n');
 
-function writeChunks(term: Terminal, chunks: Chunk[]): void {
+function writeChunks(term: Terminal, chunks: Chunk[], opts: { suppressTrailingNewline?: boolean } = {}): void {
   let endedWithNewline = true;
   for (const c of chunks) {
     if (!c.text) continue;
@@ -22,7 +22,7 @@ function writeChunks(term: Terminal, chunks: Chunk[]): void {
     term.write(color + toCrlf(c.text) + (color ? RESET : ''));
     endedWithNewline = c.text.endsWith('\n');
   }
-  if (!endedWithNewline) term.write('\r\n');
+  if (!endedWithNewline && !opts.suppressTrailingNewline) term.write('\r\n');
 }
 
 export function TerminalView({ game }: { game: Game }) {
@@ -75,6 +75,12 @@ export function TerminalView({ game }: { game: Game }) {
     const history: string[] = [];
     let hIdx = 0;
     let draft = '';
+    // Password-prompt mode (set while game.session.pendingAuth is active): the
+    // shell already printed the fixed "user@host's password: " label as part
+    // of its output, so redraw() reuses it instead of the normal prompt, and
+    // keystrokes are shown as asterisks instead of the real characters.
+    let masked = false;
+    let passwordLabel = '';
 
     const promptText = (): string => {
       const p = game.promptParts();
@@ -82,8 +88,10 @@ export function TerminalView({ game }: { game: Game }) {
     };
 
     const redraw = (): void => {
-      const back = buf.length - cur;
-      term.write(`\r${ESC}2K${promptText()}${buf}${back > 0 ? `${ESC}${back}D` : ''}`);
+      const label = masked ? passwordLabel : promptText();
+      const shown = masked ? '*'.repeat(buf.length) : buf;
+      const back = shown.length - cur;
+      term.write(`\r${ESC}2K${label}${shown}${back > 0 ? `${ESC}${back}D` : ''}`);
     };
 
     const showPrompt = (): void => {
@@ -102,23 +110,40 @@ export function TerminalView({ game }: { game: Game }) {
 
     const submit = async (): Promise<void> => {
       const line = buf;
+      const wasPassword = masked;
       term.write('\r\n');
       buf = '';
       cur = 0;
-      if (line.trim()) {
-        if (history[history.length - 1] !== line) history.push(line);
+
+      if (wasPassword && line.trim() === '') {
+        // Real terminals still let you hit Enter on an empty password line; we
+        // just redisplay the same prompt rather than spending an attempt,
+        // since Game.run() ignores blank lines entirely (so nothing would
+        // happen on the engine side anyway).
+        term.write(passwordLabel);
+        return;
+      }
+
+      if (line.trim() || wasPassword) {
+        if (!wasPassword && history[history.length - 1] !== line) history.push(line);
         busy = true;
         try {
           const out: ShellOutput = await game.run(line);
           if (out.clear) term.write(`${ESC}2J${ESC}3J${ESC}H`);
-          writeChunks(term, out.chunks);
+          const stillPending = !!game.session.pendingAuth;
+          writeChunks(term, out.chunks, { suppressTrailingNewline: stillPending });
+          masked = stillPending;
+          if (stillPending) {
+            passwordLabel = out.chunks.length > 0 ? out.chunks[out.chunks.length - 1].text : '';
+          }
         } catch (e) {
           term.write(`${ESC}91minternal error: ${String(e)}${RESET}\r\n`);
+          masked = false;
         } finally {
           busy = false;
         }
       }
-      showPrompt();
+      if (!masked) showPrompt();
     };
 
     writeChunks(term, game.banner());
@@ -168,6 +193,7 @@ export function TerminalView({ game }: { game: Game }) {
           redraw();
           return;
         case '\x1b[A': // history up
+          if (masked) return;
           if (hIdx > 0) {
             if (hIdx === history.length) draft = buf;
             hIdx--;
@@ -175,12 +201,17 @@ export function TerminalView({ game }: { game: Game }) {
           }
           return;
         case '\x1b[B': // history down
+          if (masked) return;
           if (hIdx < history.length) {
             hIdx++;
             setBuffer(hIdx === history.length ? draft : history[hIdx]);
           }
           return;
         case '\x03': // ctrl+c
+          if (masked) {
+            delete game.session.pendingAuth;
+            masked = false;
+          }
           term.write('^C\r\n');
           showPrompt();
           return;
@@ -194,6 +225,7 @@ export function TerminalView({ game }: { game: Game }) {
           redraw();
           return;
         case '\t': {
+          if (masked) return;
           const { completed, options } = game.shell.complete(buf.slice(0, cur));
           const tail = buf.slice(cur);
           if (options.length > 1) term.write(`\r\n${options.join('  ')}\r\n`);

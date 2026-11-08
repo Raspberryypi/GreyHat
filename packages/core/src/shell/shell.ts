@@ -1,12 +1,13 @@
 import { FsError, resolvePath } from '../fs/vfs';
 import type { FsNode } from '../fs/vfs';
 import { coreCommands, coreHelp } from '../commands';
+import { attemptAuth } from '../commands/net';
 import { fail, ok } from '../commands/util';
 import type { GameEvent } from '../events';
 import type { World } from '../world/world';
 import { expandWord, type ExpandEnv } from './expand';
 import { ParseError, parse, type Connector, type Pipeline, type SimpleCommand, type Word } from './parser';
-import { identityOf } from './session';
+import { enterSession, identityOf } from './session';
 import type { Chunk, CommandContext, CommandRegistry, CommandResult, Session, ShellOutput } from './types';
 
 export interface ShellDeps {
@@ -51,6 +52,9 @@ export class Shell {
   /** Run one line of input. Never throws for user errors. */
   async exec(line: string): Promise<ShellOutput> {
     const s = this.deps.session;
+    if (s.pendingAuth) {
+      return this.handlePasswordLine(line);
+    }
     const chunks: Chunk[] = [];
     let clear = false;
 
@@ -117,6 +121,42 @@ export class Shell {
   }
 
   /* ---------------------------------------------------------------- internals */
+
+  private handlePasswordLine(line: string): ShellOutput {
+    const s = this.deps.session;
+    const pending = s.pendingAuth!;
+    const { world, emit } = this.deps;
+    const targetHost = world.host(pending.targetHostId);
+    const sourceIp = world.host(s.hostId).ip;
+    const success = attemptAuth(world, sourceIp, pending, line);
+
+    emit({
+      type: 'auth.attempt',
+      hostId: s.hostId,
+      targetHostId: pending.targetHostId,
+      targetUser: pending.targetUser,
+      user: s.user,
+      success,
+    });
+
+    if (success) {
+      s.stack.push(pending.fromFrame);
+      delete s.pendingAuth;
+      enterSession(s, world, pending.targetHostId, pending.targetUser);
+      s.lastExit = 0;
+      return { chunks: [{ stream: 'out', text: `Welcome to ${targetHost.hostname}.\n` }] };
+    }
+
+    pending.attemptsLeft -= 1;
+    if (pending.attemptsLeft <= 0) {
+      delete s.pendingAuth;
+      s.lastExit = 1;
+      return { chunks: [{ stream: 'err', text: 'Permission denied (publickey,password).\n' }] };
+    }
+    return {
+      chunks: [{ stream: 'out', text: `${pending.targetUser}@${targetHost.hostname}'s password: ` }],
+    };
+  }
 
   private makeContext(stdin: string): CommandContext {
     const { world, session } = this.deps;
