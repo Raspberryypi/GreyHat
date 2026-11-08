@@ -1,6 +1,6 @@
 import type { World } from '../world/world';
 import type { CommandFn } from '../shell/types';
-import { appendSshAuthLine } from '../net/authlog';
+import { appendSshAuthLine, appendSuAuthLine } from '../net/authlog';
 import { fail, ok, parseArgs } from './util';
 
 function resolveTarget(world: World, nameOrIp: string) {
@@ -140,6 +140,7 @@ export const ssh: CommandFn = (args, ctx) => {
     targetHostId: targetHost.id,
     targetUser: user,
     attemptsLeft: 3,
+    method: 'ssh',
     fromFrame: {
       hostId: ctx.session.hostId,
       user: ctx.session.user,
@@ -149,6 +150,30 @@ export const ssh: CommandFn = (args, ctx) => {
     },
   };
   return ok(`${user}@${target}'s password: `);
+};
+
+export const su: CommandFn = (args, ctx) => {
+  const target = args[0] ?? 'root';
+  if (target === ctx.session.user) {
+    return fail(`su: warning: cannot change directory to current user\n`, 0);
+  }
+  if (!ctx.host.users.some((u) => u.name === target)) {
+    return fail(`su: user ${target} does not exist`);
+  }
+  ctx.session.pendingAuth = {
+    targetHostId: ctx.host.id,
+    targetUser: target,
+    attemptsLeft: 3,
+    method: 'su',
+    fromFrame: {
+      hostId: ctx.session.hostId,
+      user: ctx.session.user,
+      groups: [...ctx.session.groups],
+      cwd: ctx.session.cwd,
+      env: { ...ctx.session.env },
+    },
+  };
+  return ok('Password: ');
 };
 
 export const ss: CommandFn = (_args, ctx) => {
@@ -179,12 +204,17 @@ export const netstat: CommandFn = (_args, ctx) => {
 export function attemptAuth(
   world: World,
   sourceIp: string,
-  pending: { targetHostId: string; targetUser: string },
+  pending: { targetHostId: string; targetUser: string; method: 'ssh' | 'su' },
   candidate: string,
+  fromUser: string,
 ): boolean {
   const target = world.host(pending.targetHostId);
   const spec = target.users.find((u) => u.name === pending.targetUser);
   const success = !!spec && spec.password !== undefined && spec.password === candidate;
-  appendSshAuthLine(world, pending.targetHostId, { sourceIp, user: pending.targetUser, success });
+  if (pending.method === 'su') {
+    appendSuAuthLine(world, pending.targetHostId, { fromUser, toUser: pending.targetUser, success });
+  } else {
+    appendSshAuthLine(world, pending.targetHostId, { sourceIp, user: pending.targetUser, success });
+  }
   return success;
 }

@@ -26,6 +26,8 @@ export interface Session {
     targetUser: string;
     attemptsLeft: number;
     fromFrame: SessionFrame;
+    /** Which prompt/log style to use: a remote `ssh` login or a local `su`. */
+    method: 'ssh' | 'su';
   };
 }
 
@@ -62,6 +64,12 @@ export interface CommandContext {
   emit(event: GameEvent): void;
   /** Command name -> one-line description (for `help`). */
   help: Record<string, string>;
+  /**
+   * Run another command as a different identity, e.g. for `sudo`. Reuses the
+   * same host/fs/stdin as this invocation; does not touch the session (the
+   * elevation is scoped to this one call, not a login).
+   */
+  runAs(id: Identity, name: string, args: string[]): Promise<CommandResult>;
 }
 
 export type CommandFn = (args: string[], ctx: CommandContext) => CommandResult | Promise<CommandResult>;

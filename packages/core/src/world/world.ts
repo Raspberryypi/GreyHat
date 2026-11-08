@@ -30,6 +30,30 @@ export interface FirewallRule {
   fromHostId?: string;
 }
 
+/**
+ * One line of a host's /etc/sudoers (simplified). This simulation only
+ * executes NOPASSWD rules -- a rule with noPasswd unset/false is still
+ * listed by `sudo -l` (for realism) but `sudo <cmd>` refuses it with a
+ * "password required" message, since there is no separate password-prompt
+ * flow for sudo yet (see HANDOFF.txt section 7.2).
+ */
+export interface SudoRule {
+  /** Username this rule applies to, or 'ALL'. */
+  user: string;
+  /** Command names this rule allows (matched against argv[0] after `sudo`), or 'ALL'. */
+  commands: string[] | 'ALL';
+  noPasswd?: boolean;
+  /** Defaults to 'root'. */
+  asUser?: string;
+}
+
+/** One row of `ps`. Static -- not a real scheduler, just a recon artifact. */
+export interface ProcessSpec {
+  pid: number;
+  user: string;
+  cmd: string;
+}
+
 export interface HostSpec {
   id: string;
   hostname: string;
@@ -44,6 +68,10 @@ export interface HostSpec {
    * host in the world" (default full mesh) -- set it to model subnets.
    */
   reachable?: string[];
+  sudoers?: SudoRule[];
+  processes?: ProcessSpec[];
+  /** Per-user crontab lines, as `crontab -l` would show them to that exact user. */
+  crontabs?: Record<string, string[]>;
 }
 
 export interface WorldSpec {
@@ -62,6 +90,9 @@ export interface Host {
   firewall: FirewallRule[];
   /** null = full mesh (reaches every host). */
   reachable: Set<string> | null;
+  sudoers: SudoRule[];
+  processes: ProcessSpec[];
+  crontabs: Record<string, string[]>;
 }
 
 export type PortState = 'open' | 'closed' | 'filtered';
@@ -145,6 +176,9 @@ export function buildWorld(spec: WorldSpec, rng: Rng): World {
       services: h.services ?? [],
       firewall: h.firewall ?? [],
       reachable: h.reachable ? new Set(h.reachable) : null,
+      sudoers: h.sudoers ?? [],
+      processes: h.processes ?? [],
+      crontabs: h.crontabs ?? {},
     });
     world.indexIp(h.ip, h.id);
   }

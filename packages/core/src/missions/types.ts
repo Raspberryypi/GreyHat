@@ -10,7 +10,15 @@ export type ObjectiveCheck =
   /** Player submitted this answer with `submit <answer>`. */
   | { kind: 'answer'; value: string }
   /** Player successfully authenticated (e.g. via ssh) as this user on a target host. */
-  | { kind: 'authSuccess'; targetUser: string; targetHostId?: string };
+  | { kind: 'authSuccess'; targetUser: string; targetHostId?: string }
+  /**
+   * Player added a firewall rule on hostId that denies traffic on `port`,
+   * optionally scoped to one source host (fromHostId). Use this instead of
+   * `commandRun` on 'ufw' so the objective is phrased in terms of the
+   * EFFECT ("you blocked it") rather than one specific command's syntax --
+   * a future `iptables` front end could emit the same event.
+   */
+  | { kind: 'firewallBlocks'; hostId: string; port: number; fromHostId?: string };
 
 export interface ObjectiveDef {
   id: string;

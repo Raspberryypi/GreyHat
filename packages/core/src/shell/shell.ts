@@ -1,5 +1,5 @@
 import { FsError, resolvePath } from '../fs/vfs';
-import type { FsNode } from '../fs/vfs';
+import type { FsNode, Identity } from '../fs/vfs';
 import { coreCommands, coreHelp } from '../commands';
 import { attemptAuth } from '../commands/net';
 import { fail, ok } from '../commands/util';
@@ -128,7 +128,8 @@ export class Shell {
     const { world, emit } = this.deps;
     const targetHost = world.host(pending.targetHostId);
     const sourceIp = world.host(s.hostId).ip;
-    const success = attemptAuth(world, sourceIp, pending, line);
+    const fromUser = s.user;
+    const success = attemptAuth(world, sourceIp, pending, line, fromUser);
 
     emit({
       type: 'auth.attempt',
@@ -144,6 +145,7 @@ export class Shell {
       delete s.pendingAuth;
       enterSession(s, world, pending.targetHostId, pending.targetUser);
       s.lastExit = 0;
+      if (pending.method === 'su') return { chunks: [] };
       return { chunks: [{ stream: 'out', text: `Welcome to ${targetHost.hostname}.\n` }] };
     }
 
@@ -151,17 +153,17 @@ export class Shell {
     if (pending.attemptsLeft <= 0) {
       delete s.pendingAuth;
       s.lastExit = 1;
-      return { chunks: [{ stream: 'err', text: 'Permission denied (publickey,password).\n' }] };
+      const msg = pending.method === 'su' ? 'su: Authentication failure\n' : 'Permission denied (publickey,password).\n';
+      return { chunks: [{ stream: 'err', text: msg }] };
     }
-    return {
-      chunks: [{ stream: 'out', text: `${pending.targetUser}@${targetHost.hostname}'s password: ` }],
-    };
+    const prompt = pending.method === 'su' ? 'Password: ' : `${pending.targetUser}@${targetHost.hostname}'s password: `;
+    return { chunks: [{ stream: 'out', text: prompt }] };
   }
 
-  private makeContext(stdin: string): CommandContext {
+  private makeContext(stdin: string, idOverride?: Identity): CommandContext {
     const { world, session } = this.deps;
     const host = world.host(session.hostId);
-    const id = identityOf(session);
+    const id = idOverride ?? identityOf(session);
     const resolve = (p: string): string => resolvePath(session.cwd, p);
     return {
       session,
@@ -179,6 +181,15 @@ export class Shell {
       },
       emit: this.deps.emit,
       help: this.help,
+      runAs: async (runId: Identity, name: string, args: string[]): Promise<CommandResult> => {
+        if (!Object.hasOwn(this.commands, name)) return fail(`sudo: ${name}: command not found`, 127);
+        try {
+          return await this.commands[name](args, this.makeContext(stdin, runId));
+        } catch (e) {
+          if (e instanceof FsError) return fail(`sudo: ${name}: ${e.message}`);
+          throw e;
+        }
+      },
     };
   }
 

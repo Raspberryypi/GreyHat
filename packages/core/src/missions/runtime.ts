@@ -28,6 +28,14 @@ export function matchesCheck(check: ObjectiveCheck, e: GameEvent): boolean {
         e.targetUser === check.targetUser &&
         (!check.targetHostId || e.targetHostId === check.targetHostId)
       );
+    case 'firewallBlocks':
+      return (
+        e.type === 'firewall.rule' &&
+        e.hostId === check.hostId &&
+        e.rule.action === 'deny' &&
+        e.rule.port === check.port &&
+        (!check.fromHostId || e.rule.fromHostId === check.fromHostId)
+      );
   }
 }
 

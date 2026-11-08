@@ -201,6 +201,121 @@ export const rm: CommandFn = (args, ctx) => {
   return { stdout: '', stderr: err, exitCode: err ? 1 : 0 };
 };
 
+export const chmod: CommandFn = (args, ctx) => {
+  const { positional } = parseArgs(args, []);
+  if (positional.length < 2) return fail('chmod: missing operand');
+  const modeStr = positional[0];
+  const mode = parseInt(modeStr, 8);
+  if (Number.isNaN(mode) || !/^[0-7]{3,4}$/.test(modeStr)) {
+    return fail(`chmod: invalid mode: '${modeStr}' (only octal modes like 755 or 0644 are supported)`);
+  }
+  let err = '';
+  for (const p of positional.slice(1)) {
+    try {
+      ctx.fs.chmod(ctx.resolve(p), mode, ctx.id);
+    } catch (e) {
+      err += `chmod: changing permissions of '${p}': ${errText(e)}\n`;
+    }
+  }
+  return { stdout: '', stderr: err, exitCode: err ? 1 : 0 };
+};
+
+/**
+ * chown [owner][:[group]] file...  Only root can actually change ownership
+ * (enforced by VirtualFS.chown); a non-root attempt reports "Permission
+ * denied", same as a real unprivileged Linux box.
+ */
+export const chown: CommandFn = (args, ctx) => {
+  const { positional } = parseArgs(args, []);
+  if (positional.length < 2) return fail('chown: missing operand');
+  const spec = positional[0];
+  let owner: string | undefined;
+  let group: string | undefined;
+  if (spec.includes(':')) {
+    const [o, g] = spec.split(':');
+    owner = o || undefined;
+    group = g || undefined;
+  } else {
+    owner = spec;
+  }
+  let err = '';
+  for (const p of positional.slice(1)) {
+    try {
+      const abs = ctx.resolve(p);
+      const node = ctx.fs.stat(abs, ctx.id);
+      ctx.fs.chown(abs, owner ?? node.owner, group, ctx.id);
+    } catch (e) {
+      err += `chown: changing ownership of '${p}': ${errText(e)}\n`;
+    }
+  }
+  return { stdout: '', stderr: err, exitCode: err ? 1 : 0 };
+};
+
+export const cp: CommandFn = (args, ctx) => {
+  const { positional } = parseArgs(args, []);
+  if (positional.length < 2) return fail('cp: missing destination file operand');
+  const dest = positional[positional.length - 1];
+  const sources = positional.slice(0, -1);
+  const destAbs = ctx.resolve(dest);
+  let destIsDir = false;
+  try {
+    destIsDir = ctx.fs.stat(destAbs, ctx.id).type === 'dir';
+  } catch {
+    /* dest need not exist yet */
+  }
+  if (sources.length > 1 && !destIsDir) return fail(`cp: target '${dest}' is not a directory`);
+  let err = '';
+  for (const s of sources) {
+    try {
+      const srcAbs = ctx.resolve(s);
+      const node = ctx.fs.stat(srcAbs, ctx.id);
+      if (node.type === 'dir') {
+        err += `cp: -r not specified; omitting directory '${s}'\n`;
+        continue;
+      }
+      const content = ctx.readFile(s);
+      const targetAbs = destIsDir ? joinPath(destAbs, basename(srcAbs)) : destAbs;
+      ctx.fs.writeFile(targetAbs, content, ctx.id, { mtime: ctx.world.now });
+    } catch (e) {
+      err += `cp: cannot copy '${s}': ${errText(e)}\n`;
+    }
+  }
+  return { stdout: '', stderr: err, exitCode: err ? 1 : 0 };
+};
+
+export const mv: CommandFn = (args, ctx) => {
+  const { positional } = parseArgs(args, []);
+  if (positional.length < 2) return fail('mv: missing destination file operand');
+  const dest = positional[positional.length - 1];
+  const sources = positional.slice(0, -1);
+  const destAbs = ctx.resolve(dest);
+  let destIsDir = false;
+  try {
+    destIsDir = ctx.fs.stat(destAbs, ctx.id).type === 'dir';
+  } catch {
+    /* dest need not exist yet */
+  }
+  if (sources.length > 1 && !destIsDir) return fail(`mv: target '${dest}' is not a directory`);
+  let err = '';
+  for (const s of sources) {
+    try {
+      const srcAbs = ctx.resolve(s);
+      const node = ctx.fs.stat(srcAbs, ctx.id);
+      if (node.type === 'dir') {
+        err += `mv: moving directories is not supported yet: '${s}'\n`;
+        continue;
+      }
+      const content = ctx.readFile(s);
+      const targetAbs = destIsDir ? joinPath(destAbs, basename(srcAbs)) : destAbs;
+      ctx.fs.writeFile(targetAbs, content, ctx.id, { mtime: ctx.world.now });
+      ctx.fs.remove(srcAbs, ctx.id);
+    } catch (e) {
+      err += `mv: cannot move '${s}': ${errText(e)}\n`;
+    }
+  }
+  return { stdout: '', stderr: err, exitCode: err ? 1 : 0 };
+};
+
 export const find: CommandFn = (args, ctx) => {
   let i = 0;
   const paths: string[] = [];

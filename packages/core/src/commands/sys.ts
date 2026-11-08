@@ -72,6 +72,23 @@ export const exitCmd: CommandFn = (_a, ctx) => {
   return ok('logout\n');
 };
 
+export const ps: CommandFn = (args, ctx) => {
+  const { flags } = parseArgs(args);
+  const aux = flags.has('a') || flags.has('e') || flags.has('u') || flags.has('x');
+  const shellProc = { pid: 902, user: ctx.id.user, cmd: ctx.session.env.SHELL ?? '-bash' };
+  if (!aux) {
+    return ok(`  PID TTY          TIME CMD\n${String(shellProc.pid).padStart(5)} pts/0    00:00:00 ${shellProc.cmd.split('/').pop()}\n`);
+  }
+  const svcProcs = ctx.host.services.map((s, i) => ({
+    pid: 400 + i * 2,
+    user: 'root',
+    cmd: `/usr/sbin/${s.name === 'ssh' ? 'sshd' : s.name}d -D`,
+  }));
+  const all = [{ pid: 1, user: 'root', cmd: '/sbin/init' }, ...ctx.host.processes, ...svcProcs, shellProc];
+  const rows = all.map((p) => `${p.user.padEnd(10)} ${String(p.pid).padStart(4)}  0.0  0.1 ${p.cmd}`);
+  return ok(`USER       PID %CPU %MEM COMMAND\n${rows.join('\n')}\n`);
+};
+
 export const help: CommandFn = (_a, ctx) => {
   const names = Object.keys(ctx.help).sort();
   const w = Math.max(...names.map((n) => n.length)) + 2;

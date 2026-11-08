@@ -319,4 +319,17 @@ export class VirtualFS {
     if (id.user !== 'root' && node.owner !== id.user) throw new FsError('EACCES', abs);
     node.mode = mode;
   }
+
+  /**
+   * Change a file's owner and/or group. Only root may do this in this
+   * simulation (matches a default, unprivileged Linux system: CAP_CHOWN is
+   * not granted to a file's own owner). Pass `group` as undefined to leave
+   * the group unchanged (the "chown newowner file" form).
+   */
+  chown(abs: string, owner: string, group: string | undefined, id: Identity): void {
+    const node = this.walk(abs, id);
+    if (id.user !== 'root') throw new FsError('EACCES', abs);
+    node.owner = owner;
+    if (group !== undefined) node.group = group;
+  }
 }

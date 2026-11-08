@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { Game } from '@greyhat/core';
 import { missions } from './index';
 import { ATTACKER_IP, COMPROMISED_USER } from './missions/m002-brute-force';
+import { INCIDENT_USER, INCIDENT_METHOD } from './missions/m005-after-the-fact';
 
 const text = (out: { chunks: { text: string }[] }): string => out.chunks.map((c) => c.text).join('');
 
@@ -83,5 +84,51 @@ describe('M002 brute force', () => {
     const fs = game.world.host('srv01').fs;
     expect(() => fs.readFile('/var/log/auth.log', { user: 'alice', groups: ['alice'] })).toThrow();
     expect(fs.readFile('/var/log/auth.log', { user: 'analyst', groups: ['analyst', 'adm'] })).toContain('sshd');
+  });
+});
+
+describe('M005 after the fact', () => {
+  const m005 = missions.find((m) => m.id === 'M005')!;
+  const root = { user: 'root', groups: ['root'] };
+
+  it('is deterministic for a given seed and varies between seeds', () => {
+    const read = (seed: number): string => new Game(m005, seed).world.host('finance01').fs.readFile('/var/log/auth.log', root);
+    expect(read(42)).toBe(read(42));
+    expect(read(42)).not.toBe(read(43));
+  });
+
+  it('has exactly one su-based root escalation, and it is the incident account', () => {
+    for (const seed of [1, 2, 3, 99, 2024]) {
+      const log = new Game(m005, seed).world.host('finance01').fs.readFile('/var/log/auth.log', root);
+      const suLines = log.split('\n').filter((l) => l.includes(' su['));
+      expect(suLines).toHaveLength(1);
+      expect(suLines[0]).toContain(`by ${INCIDENT_USER}(uid=0)`);
+    }
+  });
+
+  it('buries the incident in genuine sudo noise, not as the only hit', () => {
+    const log = new Game(m005, 5).world.host('finance01').fs.readFile('/var/log/auth.log', root);
+    const rootSessions = log.split('\n').filter((l) => l.includes('session opened for user root'));
+    // 34 routine sudo PAM lines + 1 su PAM line.
+    expect(rootSessions.length).toBe(35);
+    expect(rootSessions.filter((l) => l.includes(' su[')).length).toBe(1);
+  });
+
+  it('rejects wrong answers and accepts the right username and mechanism', async () => {
+    const game = new Game(m005, 5);
+    expect(text(await game.run('submit sre-priya'))).toContain('Incorrect');
+    expect(text(await game.run('submit sudo'))).toContain('Incorrect');
+    const whoOk = text(await game.run(`submit ${INCIDENT_USER}`));
+    expect(whoOk).toContain('Answer accepted');
+    const howOk = text(await game.run(`submit ${INCIDENT_METHOD}`));
+    expect(howOk).toContain('Answer accepted');
+    expect(game.runtime.isDone('who')).toBe(true);
+    expect(game.runtime.isDone('how')).toBe(true);
+  });
+
+  it('the log is readable via the adm group but not by an unrelated user', () => {
+    const fs = new Game(m005, 5).world.host('finance01').fs;
+    expect(() => fs.readFile('/var/log/auth.log', { user: 'nobody', groups: ['nobody'] })).toThrow();
+    expect(fs.readFile('/var/log/auth.log', { user: 'analyst', groups: ['analyst', 'adm'] })).toContain('sudo:');
   });
 });

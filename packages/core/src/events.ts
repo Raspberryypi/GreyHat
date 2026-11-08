@@ -2,6 +2,8 @@
  * Everything that happens in the simulation is an event. Missions, the
  * (future) live adversary and (future) detection scripts all consume these.
  */
+import type { FirewallRule } from './world/world';
+
 export type GameEvent =
   | { type: 'command'; hostId: string; user: string; name: string; args: string[]; exitCode: number }
   | { type: 'file.read'; hostId: string; path: string; user: string }
@@ -19,4 +21,6 @@ export type GameEvent =
       targetUser: string;
       user: string;
       success: boolean;
-    };
+    }
+  /** A firewall rule was added on hostId (ufw/iptables-lite). */
+  | { type: 'firewall.rule'; hostId: string; rule: FirewallRule; op: 'add' };

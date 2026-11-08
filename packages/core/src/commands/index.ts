@@ -1,7 +1,8 @@
 import type { CommandRegistry } from '../shell/types';
-import { cat, cd, find, ls, mkdir, pwd, rm, touch } from './fs';
+import { cat, cd, chmod, chown, cp, find, ls, mkdir, mv, pwd, rm, touch } from './fs';
 import { awk, cut, echo, grep, head, sort, tail, uniq, wc } from './text';
-import { nmap, ping, ss, netstat, ssh } from './net';
+import { nmap, ping, ss, netstat, ssh, su } from './net';
+import { crontab, sudo } from './priv';
 import {
   clear,
   date,
@@ -12,6 +13,7 @@ import {
   help,
   hostname,
   idCmd,
+  ps,
   trueCmd,
   uname,
   whoami,
@@ -26,6 +28,10 @@ export const coreCommands: CommandRegistry = {
   mkdir,
   rm,
   find,
+  chmod,
+  chown,
+  cp,
+  mv,
   echo,
   head,
   tail,
@@ -49,9 +55,13 @@ export const coreCommands: CommandRegistry = {
   ping,
   nmap,
   ssh,
+  su,
   ss,
   netstat,
   exit: exitCmd,
+  sudo,
+  crontab,
+  ps,
 };
 
 export const coreHelp: Record<string, string> = {
@@ -63,6 +73,10 @@ export const coreHelp: Record<string, string> = {
   mkdir: 'create a directory (-p)',
   rm: 'remove files (-r -f)',
   find: 'search for files (-name -iname -type -perm -user -maxdepth)',
+  chmod: 'change permissions: chmod 644 file (octal modes only)',
+  chown: 'change ownership: chown owner[:group] file (root only)',
+  cp: 'copy files: cp src dest (or several files into a directory)',
+  mv: 'move/rename files: mv src dest',
   echo: 'print text (-n -e)',
   head: 'first lines of input (-n N)',
   tail: 'last lines of input (-n N)',
@@ -86,7 +100,11 @@ export const coreHelp: Record<string, string> = {
   ping: 'check if a host is reachable (-c count)',
   nmap: 'scan a host for open ports (-p ports, -sV versions, -sn ping-only)',
   ssh: 'log in to a remote host: ssh [user@]host (-l user, -p port)',
+  su: 'switch to another user on this host: su [user] (defaults to root)',
   ss: 'show listening sockets on this host',
   netstat: 'show listening sockets on this host (legacy ss alias)',
-  exit: 'log out of the current ssh session',
+  exit: 'log out of the current ssh/su session',
+  sudo: 'run a command as another user, per sudoers: sudo [-l] <command> [args]',
+  crontab: 'show your own scheduled jobs: crontab -l',
+  ps: 'list processes (-a/-e/-u/-x for a full table)',
 };
