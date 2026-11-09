@@ -174,3 +174,99 @@ describe('ufw', () => {
     expect(game.runtime.isDone('contain')).toBe(true);
   });
 });
+
+describe('fail2ban-lite', () => {
+  it('with no fail2ban configured, repeated failures never ban anyone', () => {
+    const game = new Game(makeMission(), 1);
+    for (let i = 0; i < 5; i++) {
+      expect(game.world.recordAuthFailure('target', '10.0.0.5', game.world.now)).toBeNull();
+    }
+    expect(game.world.probePort('attacker', 'target', 22)).toBe('open');
+  });
+
+  it('fail2ban-client reports zero jails when fail2ban is not configured for this host', async () => {
+    const game = new Game(makeMission(), 1);
+    const status = text(await game.run('fail2ban-client status'));
+    expect(status).toContain('Number of jail:\t0');
+  });
+
+  it("trips before ssh's own 3-strikes limit when the threshold is lower, proving the two counters are independent", async () => {
+    const m = makeMission();
+    m.world.hosts[1].fail2ban = { maxFailures: 2, windowMs: 3_600_000 };
+    const game = new Game(m, 1);
+    await game.run('ssh bob@10.0.0.20');
+    await game.run('wrong1');
+    expect(game.world.probePort('attacker', 'target', 22)).toBe('open');
+    const out = text(await game.run('wrong2'));
+    // Still well within THIS connection's own 3-attempt budget (ssh itself
+    // reprompts for a 3rd try rather than disconnecting) -- but fail2ban's
+    // own, lower threshold (2) has already been crossed by this point.
+    expect(out).toContain('password');
+    expect(out).not.toContain('Permission denied');
+    expect(game.world.probePort('attacker', 'target', 22)).toBe('filtered');
+  });
+
+  it("bans exactly when the connection's own limit is exhausted, if the thresholds happen to match", async () => {
+    const m = makeMission();
+    m.world.hosts[1].fail2ban = { maxFailures: 3, windowMs: 3_600_000 };
+    const game = new Game(m, 1);
+    await game.run('ssh bob@10.0.0.20');
+    await game.run('wrong1');
+    await game.run('wrong2');
+    expect(game.world.probePort('attacker', 'target', 22)).toBe('open');
+    const out = text(await game.run('wrong3'));
+    expect(out).toContain('Permission denied'); // ssh's own 3-strikes message
+    expect(out).not.toContain('fail2ban'); // banning itself is silent, like real fail2ban
+    expect(game.world.probePort('attacker', 'target', 22)).toBe('filtered');
+    // Any later attempt from the now-banned source can't even reach the
+    // port, so it never gets to a password prompt at all.
+    const blocked = text(await game.run('ssh bob@10.0.0.20'));
+    expect(blocked).toContain('timed out');
+  });
+
+  it('does not double-ban (no duplicate firewall rules) once already banned', async () => {
+    const m = makeMission();
+    m.world.hosts[1].fail2ban = { maxFailures: 1, windowMs: 3_600_000 };
+    const game = new Game(m, 1);
+    await game.run('ssh bob@10.0.0.20');
+    await game.run('wrong1');
+    const firstCount = game.world.host('target').firewall.length;
+    const again = game.world.recordAuthFailure('target', '10.0.0.5', game.world.now);
+    expect(again).toBeNull();
+    expect(game.world.host('target').firewall.length).toBe(firstCount);
+  });
+
+  it('su never triggers a ban, no matter how many times it fails', async () => {
+    const m = makeMission({ start: { hostId: 'target', user: 'bob' } });
+    m.world.hosts[1].fail2ban = { maxFailures: 1, windowMs: 3_600_000 };
+    const game = new Game(m, 1);
+    // root has no password set in this fixture, so every guess fails.
+    await game.run('su root');
+    await game.run('wrong1');
+    await game.run('su root');
+    await game.run('wrong2');
+    expect(game.world.host('target').firewall).toHaveLength(0);
+    expect(game.world.probePort('attacker', 'target', 22)).toBe('open');
+  });
+
+  it('fail2ban-client status lists the sshd jail and the currently banned IP once banned', async () => {
+    const m = makeMission({ start: { hostId: 'target', user: 'root' } });
+    m.world.hosts[1].fail2ban = { maxFailures: 1, windowMs: 3_600_000 };
+    const game = new Game(m, 1);
+    // Set up the banned state directly at the engine level -- this test is
+    // about the COMMAND's output formatting given that state, not about
+    // getting there via ssh (that path is already covered by the other
+    // tests above, and going through ssh here would leave pendingAuth
+    // active after just one failed guess, swallowing the very next line --
+    // `fail2ban-client status` included -- as a second password attempt
+    // instead of a command). The session is started ON 'target' because
+    // fail2ban-client reads ctx.host, i.e. wherever the player currently
+    // is -- it has no way to inspect a remote host's ban list.
+    const rule = game.world.recordAuthFailure('target', '10.0.0.5', game.world.now);
+    expect(rule).not.toBeNull();
+    const status = text(await game.run('fail2ban-client status'));
+    expect(status).toContain('Jail list:\tsshd');
+    expect(status).toContain('Currently banned:\t1');
+    expect(status).toContain('10.0.0.5');
+  });
+});

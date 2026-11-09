@@ -140,6 +140,16 @@ export class Shell {
       success,
     });
 
+    // fail2ban-lite: watches CUMULATIVE failures against this host from this
+    // source across every connection attempt (not just this one's 3-strikes
+    // counter below, which is per-connection and unrelated). Only applies to
+    // ssh -- su is a local privilege-escalation attempt, not network auth, so
+    // there's no "source IP" to ban in any sense that matters.
+    if (!success && pending.method === 'ssh') {
+      const rule = world.recordAuthFailure(pending.targetHostId, sourceIp, world.now);
+      if (rule) emit({ type: 'firewall.rule', hostId: pending.targetHostId, rule, op: 'add' });
+    }
+
     if (success) {
       s.stack.push(pending.fromFrame);
       delete s.pendingAuth;

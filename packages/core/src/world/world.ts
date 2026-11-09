@@ -31,6 +31,18 @@ export interface FirewallRule {
 }
 
 /**
+ * fail2ban-lite: if set, the shell automatically bans a source host after
+ * `maxFailures` failed ssh logins against this host within `windowMs`, by
+ * pushing a deny FirewallRule exactly like `ufw` would (see
+ * World.recordAuthFailure). Opt-in per host -- omitting this field keeps a
+ * host's behaviour identical to before this feature existed.
+ */
+export interface Fail2BanRule {
+  maxFailures: number;
+  windowMs: number;
+}
+
+/**
  * One line of a host's /etc/sudoers (simplified). This simulation only
  * executes NOPASSWD rules -- a rule with noPasswd unset/false is still
  * listed by `sudo -l` (for realism) but `sudo <cmd>` refuses it with a
@@ -72,6 +84,8 @@ export interface HostSpec {
   processes?: ProcessSpec[];
   /** Per-user crontab lines, as `crontab -l` would show them to that exact user. */
   crontabs?: Record<string, string[]>;
+  /** Automatic ssh ban-on-repeated-failure. Omit for no automatic banning. */
+  fail2ban?: Fail2BanRule;
 }
 
 export interface WorldSpec {
@@ -93,6 +107,9 @@ export interface Host {
   sudoers: SudoRule[];
   processes: ProcessSpec[];
   crontabs: Record<string, string[]>;
+  fail2ban: Fail2BanRule | null;
+  /** Internal bookkeeping for fail2ban: source IP -> recent failure timestamps. */
+  authFailures: Map<string, number[]>;
 }
 
 export type PortState = 'open' | 'closed' | 'filtered';
@@ -149,6 +166,37 @@ export class World {
     return svc ? 'open' : 'closed';
   }
 
+  /**
+   * Called by the shell on every FAILED ssh auth attempt. If `hostId` has
+   * fail2ban configured and `sourceIp`'s failures within the window reach
+   * the threshold, automatically pushes a deny FirewallRule -- the exact
+   * same shape `ufw deny from <ip> to any port <p>` would produce -- onto
+   * that host's live firewall array, and returns it so the caller can emit
+   * a firewall.rule event. Returns null if fail2ban isn't configured for
+   * this host, sourceIp doesn't resolve to a registered Host (nothing to
+   * put in FirewallRule.fromHostId), the threshold hasn't been reached
+   * yet, or a matching deny rule already exists (no duplicate bans).
+   */
+  recordAuthFailure(hostId: string, sourceIp: string, atMs: number, port = 22): FirewallRule | null {
+    const host = this.host(hostId);
+    const cfg = host.fail2ban;
+    if (!cfg) return null;
+    const src = this.hostByIp(sourceIp);
+    if (!src) return null;
+
+    const times = (host.authFailures.get(sourceIp) ?? []).filter((t) => atMs - t < cfg.windowMs);
+    times.push(atMs);
+    host.authFailures.set(sourceIp, times);
+
+    if (times.length < cfg.maxFailures) return null;
+    const already = host.firewall.some((r) => r.action === 'deny' && r.port === port && r.fromHostId === src.id);
+    if (already) return null;
+
+    const rule: FirewallRule = { port, proto: 'tcp', action: 'deny', fromHostId: src.id };
+    host.firewall.push(rule);
+    return rule;
+  }
+
   advance(ms: number): void {
     this.now += ms;
   }
@@ -179,6 +227,8 @@ export function buildWorld(spec: WorldSpec, rng: Rng): World {
       sudoers: h.sudoers ?? [],
       processes: h.processes ?? [],
       crontabs: h.crontabs ?? {},
+      fail2ban: h.fail2ban ?? null,
+      authFailures: new Map(),
     });
     world.indexIp(h.ip, h.id);
   }

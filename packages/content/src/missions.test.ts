@@ -4,6 +4,7 @@ import { missions } from './index';
 import { ATTACKER_IP, COMPROMISED_USER } from './missions/m002-brute-force';
 import { INCIDENT_USER, INCIDENT_METHOD } from './missions/m005-after-the-fact';
 import { ATTACKER_IP as WEB_ATTACKER_IP, TECHNIQUE as WEB_TECHNIQUE } from './missions/m007-web-logs-dont-lie';
+import { PASSWORD as M008_PASSWORD, FLAG as M008_FLAG } from './missions/m008-three-strikes';
 
 const text = (out: { chunks: { text: string }[] }): string => out.chunks.map((c) => c.text).join('');
 
@@ -248,5 +249,81 @@ describe('M007 web logs', () => {
     expect(fs.readFile('/var/log/nginx/access.log', { user: 'analyst', groups: ['analyst', 'adm'] })).toContain(
       'HTTP/1.1',
     );
+  });
+});
+
+describe('M008 three strikes', () => {
+  const m008 = missions.find((m) => m.id === 'M008')!;
+
+  it('the correct password on the first try logs in cleanly, no ban ever triggers', async () => {
+    const game = new Game(m008, 1);
+    await game.run('cat handover-notes.txt');
+    await game.run('ssh svc-reports@203.0.113.133');
+    const welcome = text(await game.run(M008_PASSWORD));
+    expect(welcome).toContain('Welcome to app02');
+    expect(game.session.hostId).toBe('app02');
+    expect(game.world.probePort('pentest-box', 'app02', 22)).toBe('open');
+    expect(text(await game.run('cat flag.txt'))).toBe(`${M008_FLAG}\n`);
+    expect(text(await game.run(`submit ${M008_FLAG}`))).toContain('Answer accepted');
+    expect(game.runtime.isComplete()).toBe(true);
+  });
+
+  it('blind-guessing three wrong passwords in one connection permanently locks the mission', async () => {
+    // This is the trap the briefing warns about: fail2ban's threshold (3) and
+    // ssh's own per-connection attempt budget (3) are configured to match in
+    // this mission, so three wrong guesses in a row bans the source host --
+    // and there is no `ufw delete` to undo it. The real password would have
+    // worked on attempt 1; guessing blind instead makes the objective
+    // permanently unreachable for the rest of this Game.
+    const game = new Game(m008, 1);
+    await game.run('ssh svc-reports@203.0.113.133');
+    await game.run('wrong-guess-1');
+    await game.run('wrong-guess-2');
+    const locked = text(await game.run('wrong-guess-3'));
+    expect(locked).toContain('Permission denied');
+    expect(game.world.probePort('pentest-box', 'app02', 22)).toBe('filtered');
+
+    // Even the REAL password can't save it now -- the port itself is gone.
+    const tooLate = text(await game.run('ssh svc-reports@203.0.113.133'));
+    expect(tooLate).toContain('timed out');
+    expect(game.runtime.isDone('login')).toBe(false);
+    expect(game.runtime.isComplete()).toBe(false);
+  });
+
+  it("fail2ban's cumulative counter survives a cancelled connection, exactly as the hint warns", async () => {
+    // Simulates what Ctrl+C does in the browser (TerminalView.tsx deletes
+    // session.pendingAuth directly) -- the per-CONNECTION attempt budget
+    // resets on a fresh `ssh`, but the per-HOST cumulative failure count
+    // World.recordAuthFailure tracks does not, because it isn't stored on
+    // the connection at all.
+    const game = new Game(m008, 1);
+    await game.run('ssh svc-reports@203.0.113.133');
+    await game.run('wrong-guess-1'); // 1 cumulative failure
+    delete game.session.pendingAuth; // "Ctrl+C" -- bail before the 2nd/3rd attempt
+    expect(game.world.probePort('pentest-box', 'app02', 22)).toBe('open');
+
+    await game.run('ssh svc-reports@203.0.113.133'); // a fresh connection
+    await game.run('wrong-guess-2'); // 2 cumulative failures -- still open
+    expect(game.world.probePort('pentest-box', 'app02', 22)).toBe('open');
+    const banned = text(await game.run('wrong-guess-3')); // 3rd cumulative failure
+    expect(banned).toContain('password'); // just a reprompt from THIS connection's own counter
+    expect(game.world.probePort('pentest-box', 'app02', 22)).toBe('filtered');
+  });
+
+  it('a ban on app02 is a real rule in its own firewall array, inspectable directly', async () => {
+    // The player never reaches app02 in this scenario (that's the whole
+    // point), so there's no session on app02 to run `ufw status` or
+    // `fail2ban-client status` FROM -- those read ctx.host, the CURRENT
+    // host, which stays pentest-box the whole time. Check the live world
+    // state directly instead, the same array World.probePort itself reads.
+    const game = new Game(m008, 1);
+    await game.run('ssh svc-reports@203.0.113.133');
+    await game.run('w1');
+    await game.run('w2');
+    await game.run('w3');
+    const rule = game.world.host('app02').firewall.find((r) => r.fromHostId === 'pentest-box');
+    expect(rule).toBeTruthy();
+    expect(rule?.action).toBe('deny');
+    expect(rule?.port).toBe(22);
   });
 });

@@ -267,6 +267,41 @@ export const ufw: CommandFn = (args, ctx) => {
   return ok(`Rule added: ${rule.action} ${rule.port}/${rule.proto}${scope}\n`);
 };
 
+/**
+ * fail2ban-client status: read-only visibility into the automatic ssh
+ * banning configured via HostSpec.fail2ban (see World.recordAuthFailure).
+ * A host with no fail2ban configured reports zero jails, matching real
+ * fail2ban-client on a box where the service was never installed/enabled.
+ * "Currently banned" is derived by scanning ctx.host.firewall for deny
+ * rules on port 22 with a source host set -- this can't distinguish a rule
+ * fail2ban added from one `ufw` added by hand, but for display purposes
+ * that's fine: both really do mean "this IP is currently blocked."
+ */
+export const fail2banClient: CommandFn = (args, ctx) => {
+  if (args[0] && args[0] !== 'status') {
+    return fail(`fail2ban-client: unknown command: '${args[0]}'`);
+  }
+  if (!ctx.host.fail2ban) {
+    return ok('Status\n|- Number of jail:\t0\n`- Jail list:\t\n');
+  }
+  const port = 22;
+  const banned = ctx.host.firewall
+    .filter((r) => r.action === 'deny' && r.port === port && r.fromHostId)
+    .map((r) => ctx.world.hosts.get(r.fromHostId as string)?.ip ?? r.fromHostId);
+  return ok(
+    [
+      'Status',
+      '|- Number of jail:\t1',
+      '`- Jail list:\tsshd',
+      '',
+      'Status for the jail: sshd',
+      '`- Actions',
+      `   |- Currently banned:\t${banned.length}`,
+      `   \`- Banned IP list:\t${banned.join(' ')}`,
+    ].join('\n') + '\n',
+  );
+};
+
 /** Shared by Shell.exec: called once the player types a line while `pendingAuth` is set. */
 export function attemptAuth(
   world: World,
